@@ -4,22 +4,22 @@ variable "vpc_cidr" {
 }
 
 variable "private_subnet_cidr" {
-  description = "The CIDR block for the first private subnet."
+  description = "The CIDR block for the private subnet."
   default     = "10.123.1.0/24"
 }
 variable "private_subnet_b_cidr" {
-  description = "The CIDR block for the second private subnet."
-  default     = "10.123.4.0/24"
+  description = "The CIDR block for the private subnet."
+  default     = "10.123.2.0/24"
 }
 
 variable "public_subnet_cidr" {
   description = "The CIDR block for the first public subnet."
-  default     = "10.123.2.0/24"
+  default     = "10.123.3.0/24"
 }
 
 variable "public_subnet_2_cidr" {
   description = "The CIDR block for the second public subnet."
-  default     = "10.123.3.0/24"
+  default     = "10.123.4.0/24"
 }
 
 variable "availability_zone_a" {
@@ -57,7 +57,9 @@ variable "ami_id" {
   type        = string
 }
 
-#SQL Variables
+/******************************
+SQL Variables
+******************************/
 variable "instance_class" {
   description = "The instance type of the RDS instance"
   default     = "db.t3.micro"
@@ -82,3 +84,21 @@ variable "backup_window" {
   description = "When to take db backups"
   default     = "00:00-06:00"
 }
+
+variable "db_identifier" {
+  description = "The database username"
+  type        = string
+  default     = "cds-dbs" # Replace with your database name
+}
+
+variable "db_username" {
+  description = "The database username"
+  type        = string
+  default     = "CDaup" # Replace with your actual database password
+}
+
+variable "db_password" {
+  description = "The database password"
+  type        = string
+  default     = "CDsDBs!$2024Z+" # Replace with your actual database password
+} 

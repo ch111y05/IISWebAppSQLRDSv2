@@ -21,12 +21,12 @@ resource "aws_subnet" "hashi_private_subnet" {
   }
 }
 
-# Creating another private subnet within the VPC
+# Creating another private subnet within the VPC in another availability zone.
 resource "aws_subnet" "hashi_private_subnet_b" {
   vpc_id                  = aws_vpc.hashi_vpc.id
   cidr_block              = var.private_subnet_b_cidr # Change to your desired private subnet CIDR block
-  map_public_ip_on_launch = false                   # Set to true if you want instances in this subnet to have public IPs
-  availability_zone       = var.availability_zone_b # Change to your desired availability zone
+  map_public_ip_on_launch = false                     # Set to true if you want instances in this subnet to have public IPs
+  availability_zone       = var.availability_zone_b   # Change to your desired availability zone
 
   tags = {
     Name = "dev-private_b" # Customize the subnet name/tag
@@ -139,6 +139,10 @@ resource "aws_security_group" "hashi_web_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = {
+    Name = "web-sg"
+  }
 }
 
 # Creating a security group for the Application Load Balancer (ALB)
@@ -190,6 +194,26 @@ resource "aws_security_group_rule" "allow_alb_https" {
   source_security_group_id = aws_security_group.hashi_alb_sg.id
 }
 
+# Creating a security group for the SQL server
+resource "aws_security_group" "hashi_sql_sg" {
+  name        = "sql_db_sg"
+  description = "Security group for SQL server"
+  vpc_id      = aws_vpc.hashi_vpc.id
+
+  # Allow incoming SQL traffic only from the web server's security group
+  ingress {
+    from_port       = 1433 # SQL Server port
+    to_port         = 1433
+    protocol        = "tcp"
+    security_groups = [aws_security_group.hashi_web_sg.id] # Allow incoming traffic only from the web server's security group
+  }
+
+  # Other rules as needed
+
+  tags = {
+    Name = "sql_db_sg"
+  }
+}
 
 # Creating an AWS Key Pair for authentication
 resource "aws_key_pair" "hashi_auth" {
@@ -237,75 +261,132 @@ resource "aws_instance" "dev_node" {
   iam_instance_profile   = aws_iam_instance_profile.ssm_instance_profile.name
 
   user_data = <<-EOF
-    <powershell>
-    # Logging Function
-    function Write-Log {
-        param (
-            [string]$Message,
-            [string]$LogFilePath = "C:\terraform_web_setup.log"
-        )
-        
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $fullMessage = "$timestamp : $Message"
-        
-        Add-Content -Path $LogFilePath -Value $fullMessage
-    }
-
-    Write-Log "Starting the installation of Web-Server feature."
-    Install-WindowsFeature -name Web-Server -IncludeManagementTools
-    Write-Log "Web-Server feature installation completed."
-
-    # Professional-looking HTML content
-    $htmlContent = @"
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Professional Web App</title>
-        <style>
-            body {
-                margin: 0;
-                padding: 0;
-                font-family: Arial, sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                background-image: linear-gradient(to right, #2b5876, #4e4376);
-                color: white;
-            }
-            h1 {
-                font-size: 2.5em;
-            }
-            p {
-                font-size: 1.2em;
-            }
-            .container {
-                text-align: center;
-                padding: 20px;
-                background: rgba(0, 0, 0, 0.5);
-                border-radius: 10px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Welcome to the Professional Web App on IIS</h1>
-            <p>Deployed with excellence via Terraform.</p>
-        </div>
-    </body>
-    </html>
-    "@
-
-    Write-Log "Generating the HTML content for the web app."
+<powershell>
+# Logging Function
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$LogFilePath = "C:\terraform_web_setup.log"
+    )
     
-    # Write the content to the default IIS folder
-    $htmlContent | Out-File -Encoding ASCII C:\inetpub\wwwroot\index.html
-    Write-Log "HTML content written to C:\inetpub\wwwroot\index.html successfully."
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $fullMessage = "$timestamp : $Message"
+    
+    Add-Content -Path $LogFilePath -Value $fullMessage
+}
 
-    </powershell>
+Write-Log "Starting the installation of Web-Server feature."
+Install-WindowsFeature -name Web-Server -IncludeManagementTools
+Write-Log "Web-Server feature installation completed."
+
+# Install SQL Server PowerShell module
+Write-Log "Installing SQL Server PowerShell module..."
+Install-Module -Name SqlServer -Force -AllowClobber
+Write-Log "SQL Server PowerShell module installation completed."
+
+# Get the RDS endpoint from the Terraform output
+$rds_endpoint = Invoke-RestMethod -Uri http://169.254.169.254/latest/user-data/rds_endpoint
+
+# Set up database connection parameters
+$serverName = $rds_endpoint
+$databaseName = "cds-dbs" # Replace with your database name
+$db_password = "${var.db_password}" # Use the variable for the database password
+$cred = Get-Credential -UserName "CDaup" -Password (ConvertTo-SecureString -String $db_password -AsPlainText -Force)
+
+# Create a table for storing data if it doesn't exist
+Write-Log "Creating a table for storing data..."
+Invoke-Sqlcmd -ServerInstance $serverName -Database $databaseName -Credential $cred -Query @"
+CREATE TABLE IF NOT EXISTS YourTable (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    Name NVARCHAR(255),
+    Description NVARCHAR(1000)
+)
+"@
+Write-Log "Table creation completed."
+
+# Generate HTML content for the web app
+$htmlContent = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Web App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ccc;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Simple Web App</h1>
+        <h2>Data Table</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                # PowerShell script here to fetch and display data from the SQL database table
+                $sqlQuery = "SELECT * FROM YourTable"
+                $sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+                $sqlConnection.ConnectionString = "Server=$serverName;Database=$databaseName;User Id=CDaup;Password=CDsDBs!$2024Z+"
+                $sqlConnection.Open()
+                $sqlCommand = $sqlConnection.CreateCommand()
+                $sqlCommand.CommandText = $sqlQuery
+                $sqlDataReader = $sqlCommand.ExecuteReader()
+
+                while ($sqlDataReader.Read()) {
+                    $id = $sqlDataReader["ID"]
+                    $name = $sqlDataReader["Name"]
+                    $description = $sqlDataReader["Description"]
+                    Write-Output "<tr><td>$id</td><td>$name</td><td>$description</td></tr>"
+                }
+
+                $sqlDataReader.Close()
+                $sqlConnection.Close()
+            </tbody>
+        </table>
+        <h2>Add Data</h2>
+        <form action="/add" method="post">
+            <label for="name">Name:</label>
+            <input type="text" id="name" name="name" required><br>
+            <label for="description">Description:</label>
+            <textarea id="description" name="description" required></textarea><br>
+            <input type="submit" value="Add Data">
+        </form>
+    </div>
+</body>
+</html>
+"@
+
+# Write the HTML content to the default IIS folder
+Write-Log "Generating the HTML content for the web app."
+$htmlContent | Out-File -Encoding ASCII C:\inetpub\wwwroot\index.html
+Write-Log "HTML content written to C:\inetpub\wwwroot\index.html successfully."
+</powershell>
 EOF
 
   tags = {
@@ -375,7 +456,7 @@ resource "aws_instance" "bastion" {
   vpc_security_group_ids = [aws_security_group.bastion_sg.id]
 
   tags = {
-    Name = "BastionHost" # Customize the bastion host name/tag
+    Name = "Bastion" # Customize the bastion host name/tag
   }
 }
 
@@ -403,6 +484,19 @@ resource "aws_security_group" "bastion_sg" {
   }
 }
 
+# Creating a subnet group for the database.
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name = "db_subnet_group"
+  subnet_ids = [
+    aws_subnet.hashi_private_subnet.id,   # Subnet in Availability Zone A
+    aws_subnet.hashi_private_subnet_b.id, # Subnet in Availability Zone B
+  ]
+
+  tags = {
+    Name = "Database subnet group"
+  }
+}
+
 #Provision RDS SQL Server
 resource "aws_db_instance" "sql_server" {
   allocated_storage       = var.allocated_storage
@@ -410,65 +504,45 @@ resource "aws_db_instance" "sql_server" {
   engine                  = "sqlserver-ex"
   engine_version          = var.engine_version
   instance_class          = var.instance_class
-  identifier              = "cds-dbs"
-  username                = "CDaup"
-  password                = "CDsDBs!$2024Z+"
-  db_subnet_group_name    = aws_db_subnet_group.subnet_group.name
+  identifier              = var.db_identifier
+  username                = var.db_username
+  password                = var.db_password
+  db_subnet_group_name    = aws_db_subnet_group.db_subnet_group.name
   backup_retention_period = var.backup_retention_period
   backup_window           = var.backup_window
   skip_final_snapshot     = true
+
   tags = {
     name = "cds-dbs"
   }
 }
 
-resource "aws_db_subnet_group" "subnet_group" {
-  name       = "my_database_subnet_group"
-  subnet_ids = [
-    aws_subnet.hashi_private_subnet.id,          # Subnet in Availability Zone A
-    aws_subnet.hashi_private_subnet_b.id,        # Subnet in Availability Zone B
-  ]
-
-  tags = {
-    Name = "My database subnet group"
-  }
-}
-
+/* Useless instance I thought I needed.
 resource "aws_instance" "windows_instance" {
   ami           = data.aws_ami.server_ami.id # Replace with the latest Windows AMI with SQL Server
   instance_type = "t2.micro"
   subnet_id     = aws_subnet.hashi_private_subnet_b.id
 
-  vpc_security_group_ids = [aws_security_group.sql_sg.id]
-}
+  vpc_security_group_ids = [aws_security_group.hashi_sql_sg.id]
 
-resource "aws_security_group" "sql_sg" {
-  name = "allow_sql"
-  vpc_id = aws_vpc.hashi_vpc.id
-
-  ingress {
-    from_port   = 1433
-    to_port     = 1433
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-
-  tags = {
-    Name = "allow_sql"
+    tags = {
+    Name = "MyWindowsInstance"
   }
 }
+*/
 
 resource "aws_security_group_rule" "sql_rule" {
   type                     = "ingress"
   from_port                = 1433
   to_port                  = 1433
   protocol                 = "tcp"
-  security_group_id        = aws_security_group.sql_sg.id
+  security_group_id        = aws_security_group.hashi_sql_sg.id
   source_security_group_id = aws_security_group.web_sg.id
 }
 
 resource "aws_security_group" "web_sg" {
-  name = "web_app_sg"
+  name   = "web_app_sg"
+  vpc_id = aws_vpc.hashi_vpc.id
 
   # Ingress rules
   ingress {
@@ -476,7 +550,7 @@ resource "aws_security_group" "web_sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
   }
 
   ingress {
@@ -484,7 +558,7 @@ resource "aws_security_group" "web_sg" {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
   }
 
   ingress {
@@ -493,14 +567,6 @@ resource "aws_security_group" "web_sg" {
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
-  }
-
-  # Egress rules
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = {

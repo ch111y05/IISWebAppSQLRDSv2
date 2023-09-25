@@ -72,9 +72,9 @@ output "iam_role_arn" {
 
 # This output assumes your EC2 instance might have a public IP. 
 # Since your instance is in a private subnet, it probably won't, but you can include this just in case.
-output "ec2_public_ip" {
-  description = "The public IP of the EC2 instance."
-  value       = aws_instance.dev_node.public_ip
+output "Bastion_public_ip" {
+  description = "The public IP of the Bastion instance."
+  value       = aws_instance.bastion.public_ip
 }
 
 #sql outputs
