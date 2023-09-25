@@ -86,7 +86,13 @@ variable "backup_window" {
 }
 
 variable "db_identifier" {
-  description = "The database username"
+  description = "The database name."
+  type        = string
+  default     = "cds-dbs" # Replace with your database name
+}
+
+variable "db_name" {
+  description = "The database name."
   type        = string
   default     = "cds-dbs" # Replace with your database name
 }

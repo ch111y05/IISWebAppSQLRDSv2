@@ -1,3 +1,7 @@
+/*************************************************************
+Create an IIS Web App that Connects to SQL RDS
+*************************************************************/
+/************************************************************/
 # Creating a Virtual Private Cloud (VPC) named "hashi_vpc"
 resource "aws_vpc" "hashi_vpc" {
   cidr_block           = var.vpc_cidr # Change to your desired VPC CIDR block
@@ -201,13 +205,14 @@ resource "aws_security_group" "hashi_sql_sg" {
   vpc_id      = aws_vpc.hashi_vpc.id
 
   # Allow incoming SQL traffic only from the web server's security group
+  /*
   ingress {
     from_port       = 1433 # SQL Server port
     to_port         = 1433
     protocol        = "tcp"
-    security_groups = [aws_security_group.hashi_web_sg.id] # Allow incoming traffic only from the web server's security group
+    security_groups = [aws_security_group.web_sg.id] # Allow incoming traffic only from the web server's security group
   }
-
+*/
   # Other rules as needed
 
   tags = {
@@ -251,7 +256,9 @@ resource "aws_iam_instance_profile" "ssm_instance_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
+/**********************************************************
 # Creating an EC2 instance for the web server
+**********************************************************/
 resource "aws_instance" "dev_node" {
   instance_type          = var.instance_type          # Change to your desired instance type
   ami                    = data.aws_ami.server_ami.id # Use the appropriate AMI ID
@@ -259,6 +266,9 @@ resource "aws_instance" "dev_node" {
   vpc_security_group_ids = [aws_security_group.hashi_web_sg.id]
   subnet_id              = aws_subnet.hashi_private_subnet.id
   iam_instance_profile   = aws_iam_instance_profile.ssm_instance_profile.name
+
+/**********************************************************/
+#Web Page user_data
 
   user_data = <<-EOF
 <powershell>
@@ -289,14 +299,15 @@ $rds_endpoint = Invoke-RestMethod -Uri http://169.254.169.254/latest/user-data/r
 
 # Set up database connection parameters
 $serverName = $rds_endpoint
-$databaseName = "cds-dbs" # Replace with your database name
-$db_password = "${var.db_password}" # Use the variable for the database password
-$cred = Get-Credential -UserName "CDaup" -Password (ConvertTo-SecureString -String $db_password -AsPlainText -Force)
+$databaseName = var.db_name
+$databaseUsername = var.db_username
+$db_password = var.db_password
+$cred = Get-Credential -UserName $databaseUsername -Password (ConvertTo-SecureString -String $db_password -AsPlainText -Force)
 
 # Create a table for storing data if it doesn't exist
 Write-Log "Creating a table for storing data..."
 Invoke-Sqlcmd -ServerInstance $serverName -Database $databaseName -Credential $cred -Query @"
-CREATE TABLE IF NOT EXISTS YourTable (
+CREATE TABLE IF NOT EXISTS ThingstoSave (
     ID INT IDENTITY(1,1) PRIMARY KEY,
     Name NVARCHAR(255),
     Description NVARCHAR(1000)
@@ -352,7 +363,7 @@ $htmlContent = @"
                 # PowerShell script here to fetch and display data from the SQL database table
                 $sqlQuery = "SELECT * FROM YourTable"
                 $sqlConnection = New-Object System.Data.SqlClient.SqlConnection
-                $sqlConnection.ConnectionString = "Server=$serverName;Database=$databaseName;User Id=CDaup;Password=CDsDBs!$2024Z+"
+                $sqlConnection.ConnectionString = "Server=$serverName;Database=$databaseName;User Id=$databaseUsername;Password=$db_password"
                 $sqlConnection.Open()
                 $sqlCommand = $sqlConnection.CreateCommand()
                 $sqlCommand.CommandText = $sqlQuery
@@ -382,11 +393,14 @@ $htmlContent = @"
 </html>
 "@
 
+Start-Service -Name W3SVC
+
 # Write the HTML content to the default IIS folder
 Write-Log "Generating the HTML content for the web app."
 $htmlContent | Out-File -Encoding ASCII C:\inetpub\wwwroot\index.html
 Write-Log "HTML content written to C:\inetpub\wwwroot\index.html successfully."
 </powershell>
+
 EOF
 
   tags = {
@@ -469,7 +483,7 @@ resource "aws_security_group" "bastion_sg" {
     from_port   = 22 # Use 3389 for Windows instances using RDP
     to_port     = 22 # Use 3389 for Windows instances using RDP
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Restrict SSH access to a specific IP range for security. # Correspond to the IP address ranges from which you want to allow traffic.
+    cidr_blocks = ["0.0.0.0/0"] # ***Restrict SSH access to a specific IP range for security. # Correspond to the IP address ranges from which you want to allow traffic.
   }
 
   egress {
@@ -497,7 +511,9 @@ resource "aws_db_subnet_group" "db_subnet_group" {
   }
 }
 
-#Provision RDS SQL Server
+/**********************************************************
+# Provision RDS SQL Server
+**********************************************************/
 resource "aws_db_instance" "sql_server" {
   allocated_storage       = var.allocated_storage
   storage_type            = "gp2"
@@ -511,25 +527,11 @@ resource "aws_db_instance" "sql_server" {
   backup_retention_period = var.backup_retention_period
   backup_window           = var.backup_window
   skip_final_snapshot     = true
-
+  
   tags = {
     name = "cds-dbs"
   }
 }
-
-/* Useless instance I thought I needed.
-resource "aws_instance" "windows_instance" {
-  ami           = data.aws_ami.server_ami.id # Replace with the latest Windows AMI with SQL Server
-  instance_type = "t2.micro"
-  subnet_id     = aws_subnet.hashi_private_subnet_b.id
-
-  vpc_security_group_ids = [aws_security_group.hashi_sql_sg.id]
-
-    tags = {
-    Name = "MyWindowsInstance"
-  }
-}
-*/
 
 resource "aws_security_group_rule" "sql_rule" {
   type                     = "ingress"
@@ -568,6 +570,13 @@ resource "aws_security_group" "web_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
   }
+
+    ingress {
+    from_port       = 1433 # SQL Server port
+    to_port         = 1433
+    protocol        = "tcp"
+    security_groups = [aws_security_group.hashi_sql_sg.id] # Allow incoming traffic only from the web server's security group
+    }
 
   tags = {
     Name = "web_app_sg"
