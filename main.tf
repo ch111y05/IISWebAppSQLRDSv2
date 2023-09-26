@@ -137,16 +137,30 @@ resource "aws_security_group" "hashi_web_sg" {
   description = "Security group for web server"
   vpc_id      = aws_vpc.hashi_vpc.id
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   tags = {
     Name = "web-sg"
   }
+}
+
+# Creating a security group for the SQL server
+resource "aws_security_group" "hashi_sql_sg" {
+  name        = "sql_db_sg"
+  description = "Security group for SQL server"
+  vpc_id      = aws_vpc.hashi_vpc.id
+
+  tags = {
+    Name = "sql_db_sg"
+  }
+}
+
+# Define an ingress rule for the SQL server security group to allow incoming traffic from the web server's security group
+resource "aws_security_group_rule" "sql_rule" {
+  type                     = "ingress"
+  from_port                = 1433 # SQL Server port
+  to_port                  = 1433
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.hashi_sql_sg.id
+  source_security_group_id = aws_security_group.hashi_web_sg.id
 }
 
 # Creating a security group for the Application Load Balancer (ALB)
@@ -198,27 +212,6 @@ resource "aws_security_group_rule" "allow_alb_https" {
   source_security_group_id = aws_security_group.hashi_alb_sg.id
 }
 
-# Creating a security group for the SQL server
-resource "aws_security_group" "hashi_sql_sg" {
-  name        = "sql_db_sg"
-  description = "Security group for SQL server"
-  vpc_id      = aws_vpc.hashi_vpc.id
-
-  # Allow incoming SQL traffic only from the web server's security group
-  /*
-  ingress {
-    from_port       = 1433 # SQL Server port
-    to_port         = 1433
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id] # Allow incoming traffic only from the web server's security group
-  }
-*/
-  # Other rules as needed
-
-  tags = {
-    Name = "sql_db_sg"
-  }
-}
 
 # Creating an AWS Key Pair for authentication
 resource "aws_key_pair" "hashi_auth" {
@@ -361,7 +354,7 @@ $htmlContent = @"
             </thead>
             <tbody>
                 # PowerShell script here to fetch and display data from the SQL database table
-                $sqlQuery = "SELECT * FROM YourTable"
+                $sqlQuery = "SELECT * FROM ThingstoSave"
                 $sqlConnection = New-Object System.Data.SqlClient.SqlConnection
                 $sqlConnection.ConnectionString = "Server=$serverName;Database=$databaseName;User Id=$databaseUsername;Password=$db_password"
                 $sqlConnection.Open()
@@ -531,15 +524,6 @@ resource "aws_db_instance" "sql_server" {
   tags = {
     name = "cds-dbs"
   }
-}
-
-resource "aws_security_group_rule" "sql_rule" {
-  type                     = "ingress"
-  from_port                = 1433
-  to_port                  = 1433
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.hashi_sql_sg.id
-  source_security_group_id = aws_security_group.web_sg.id
 }
 
 resource "aws_security_group" "web_sg" {
