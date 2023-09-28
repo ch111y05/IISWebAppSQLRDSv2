@@ -1,7 +1,6 @@
 /*************************************************************
 Create an IIS Web App that Connects to SQL RDS
 *************************************************************/
-/************************************************************/
 # Creating a Virtual Private Cloud (VPC) named "hashi_vpc"
 resource "aws_vpc" "hashi_vpc" {
   cidr_block           = var.vpc_cidr # Change to your desired VPC CIDR block
@@ -58,6 +57,19 @@ resource "aws_subnet" "hashi_public_subnet_2" {
 
   tags = {
     Name = "dev-public-2" # Customize the subnet name/tag
+  }
+}
+
+# Creating a subnet group for the database.
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name = "db_subnet_group"
+  subnet_ids = [
+    aws_subnet.hashi_private_subnet.id,   # Subnet in Availability Zone A
+    aws_subnet.hashi_private_subnet_b.id, # Subnet in Availability Zone B
+  ]
+
+  tags = {
+    Name = "Database subnet group"
   }
 }
 
@@ -137,6 +149,29 @@ resource "aws_security_group" "hashi_web_sg" {
   description = "Security group for web server"
   vpc_id      = aws_vpc.hashi_vpc.id
 
+    # Allowing incoming traffic on port 80 and 443
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+    # Optionally define egress rules
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1" # Allow all
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = {
     Name = "web-sg"
   }
@@ -147,6 +182,22 @@ resource "aws_security_group" "hashi_sql_sg" {
   name        = "sql_db_sg"
   description = "Security group for SQL server"
   vpc_id      = aws_vpc.hashi_vpc.id
+
+    ingress {
+    description = "Allow comms for SQL server"
+    from_port   = 1433
+    to_port     = 1433
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+    # Optionally define egress rules
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1" # Allow all
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags = {
     Name = "sql_db_sg"
@@ -169,7 +220,7 @@ resource "aws_security_group" "hashi_alb_sg" {
   description = "Security group for ALB"
   vpc_id      = aws_vpc.hashi_vpc.id
 
-  # Allowing incoming traffic on port 80 and 443
+# Allowing incoming traffic on port 80 and 443
   ingress {
     from_port   = 80
     to_port     = 80
@@ -212,7 +263,6 @@ resource "aws_security_group_rule" "allow_alb_https" {
   source_security_group_id = aws_security_group.hashi_alb_sg.id
 }
 
-
 # Creating an AWS Key Pair for authentication
 resource "aws_key_pair" "hashi_auth" {
   key_name   = "hashikey"
@@ -220,27 +270,36 @@ resource "aws_key_pair" "hashi_auth" {
 }
 
 # Creating an IAM role for EC2 instances to use Amazon SSM
-resource "aws_iam_role" "ssm_role" {
-  name = "SSMRoleForEC2"
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect = "Allow"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = "sts:AssumeRole",
-        Effect = "Allow",
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
+    principals {
+      type        = "Service"
+      identifiers = ["ssm.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role" "ssm_role" {
+  name = "ssm_role"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
 
 # Attaching the SSM policy to the IAM role
 resource "aws_iam_role_policy_attachment" "ssm_attach" {
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
   role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_ssm_activation" "foo" {
+  name               = "ssm_activation"
+  description        = "ssm_activation"
+  iam_role           = aws_iam_role.ssm_role.id
+  registration_limit = "5"
+  depends_on         = [aws_iam_role_policy_attachment.ssm_attach]
 }
 
 # Creating an IAM instance profile for EC2 instances
@@ -249,9 +308,118 @@ resource "aws_iam_instance_profile" "ssm_instance_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
+/***** Creating a bastion host for SSH access *****************************************/
+resource "aws_instance" "bastion" {
+  ami           = data.aws_ami.server_ami.id # Change to a suitable Linux/Windows AMI ID
+  instance_type = "t2.micro"                 # Change to your desired instance type
+  subnet_id     = aws_subnet.hashi_public_subnet.id
+  key_name      = aws_key_pair.hashi_auth.key_name
+
+  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
+
+  tags = {
+    Name = "Bastion" # Customize the bastion host name/tag
+  }
+}
+
+# Creating a security group for the bastion host
+resource "aws_security_group" "bastion_sg" {
+  name   = "Bastion-SG"
+  vpc_id = aws_vpc.hashi_vpc.id
+
+  ingress {
+    from_port   = 22 # Use 3389 for Windows instances using RDP
+    to_port     = 22 # Use 3389 for Windows instances using RDP
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # ***Restrict SSH access to a specific IP range for security. # Correspond to the IP address ranges from which you want to allow traffic.
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Bastion-SG"
+  }
+}
+
+/*# Security group for Bastion Server?
+resource "aws_security_group" "web_sg" {
+  name   = "web_app_sg"
+  vpc_id = aws_vpc.hashi_vpc.id
+
+  # Ingress rules
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
+  }
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
+  }
+
+    ingress {
+    from_port       = 1433 # SQL Server port
+    to_port         = 1433
+    protocol        = "tcp"
+    security_groups = [aws_security_group.hashi_sql_sg.id] # Allow incoming traffic only from the web server's security group
+    }
+
+    egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "web_app_sg"
+  }
+}*/
+
 /**********************************************************
-# Creating an EC2 instance for the web server
+# Provision RDS SQL Server
 **********************************************************/
+resource "aws_db_instance" "sql_server" {
+  allocated_storage       = var.allocated_storage
+  storage_type            = "gp2"
+  engine                  = "sqlserver-ex"
+  engine_version          = var.engine_version
+  instance_class          = var.instance_class
+  identifier              = var.db_identifier
+  username                = var.db_username
+  password                = var.db_password
+  db_subnet_group_name    = aws_db_subnet_group.db_subnet_group.name
+  backup_retention_period = var.backup_retention_period
+  backup_window           = var.backup_window
+  skip_final_snapshot     = true
+  
+  tags = {
+    name = "cds-dbs"
+  }
+}
+
+/********************************************************
+# Creating an EC2 instance for the web server 
+********************************************************/
 resource "aws_instance" "dev_node" {
   instance_type          = var.instance_type          # Change to your desired instance type
   ami                    = data.aws_ami.server_ami.id # Use the appropriate AMI ID
@@ -260,10 +428,12 @@ resource "aws_instance" "dev_node" {
   subnet_id              = aws_subnet.hashi_private_subnet.id
   iam_instance_profile   = aws_iam_instance_profile.ssm_instance_profile.name
 
-/**********************************************************/
-#Web Page user_data
+/********************************************************
+# Web Page user_data 
+********************************************************/
 
   user_data = <<-EOF
+ 
 <powershell>
 # Logging Function
 function Write-Log {
@@ -287,8 +457,15 @@ Write-Log "Installing SQL Server PowerShell module..."
 Install-Module -Name SqlServer -Force -AllowClobber
 Write-Log "SQL Server PowerShell module installation completed."
 
-# Get the RDS endpoint from the Terraform output
-$rds_endpoint = Invoke-RestMethod -Uri http://169.254.169.254/latest/user-data/rds_endpoint
+# Install AWS SSM Agent
+Write-Log "Installing AWS SSM Agent..."
+Invoke-WebRequest -Uri "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/windows_amd64/AmazonSSMAgentInstaller.exe" -OutFile "C:\ssm-agent-installer.exe"
+Start-Process -Wait -FilePath "C:\ssm-agent-installer.exe" -ArgumentList "/S"
+Remove-Item -Path "C:\ssm-agent-installer.exe" -Force
+Write-Log "AWS SSM Agent installation completed."
+
+# Fetch the RDS endpoint from Terraform output
+$rds_endpoint = (Invoke-Expression -Command "terraform output rds_endpoint").Trim()
 
 # Set up database connection parameters
 $serverName = $rds_endpoint
@@ -405,6 +582,10 @@ EOF
   }
 }
 
+/********************************************************
+# End EC2 Creation 
+********************************************************/
+
 # Creating an Application Load Balancer (ALB)
 resource "aws_lb" "web_alb" {
   name               = "dev-web-alb"
@@ -450,119 +631,5 @@ resource "aws_lb_listener" "web_listener" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web_tg.arn
-  }
-}
-
-# Creating a bastion host for SSH access
-resource "aws_instance" "bastion" {
-  ami           = data.aws_ami.server_ami.id # Change to a suitable Linux/Windows AMI ID
-  instance_type = "t2.micro"                 # Change to your desired instance type
-  subnet_id     = aws_subnet.hashi_public_subnet.id
-  key_name      = aws_key_pair.hashi_auth.key_name
-
-  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
-
-  tags = {
-    Name = "Bastion" # Customize the bastion host name/tag
-  }
-}
-
-# Creating a security group for the bastion host
-resource "aws_security_group" "bastion_sg" {
-  name   = "Bastion-SG"
-  vpc_id = aws_vpc.hashi_vpc.id
-
-  ingress {
-    from_port   = 22 # Use 3389 for Windows instances using RDP
-    to_port     = 22 # Use 3389 for Windows instances using RDP
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # ***Restrict SSH access to a specific IP range for security. # Correspond to the IP address ranges from which you want to allow traffic.
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "Bastion-SG"
-  }
-}
-
-# Creating a subnet group for the database.
-resource "aws_db_subnet_group" "db_subnet_group" {
-  name = "db_subnet_group"
-  subnet_ids = [
-    aws_subnet.hashi_private_subnet.id,   # Subnet in Availability Zone A
-    aws_subnet.hashi_private_subnet_b.id, # Subnet in Availability Zone B
-  ]
-
-  tags = {
-    Name = "Database subnet group"
-  }
-}
-
-/**********************************************************
-# Provision RDS SQL Server
-**********************************************************/
-resource "aws_db_instance" "sql_server" {
-  allocated_storage       = var.allocated_storage
-  storage_type            = "gp2"
-  engine                  = "sqlserver-ex"
-  engine_version          = var.engine_version
-  instance_class          = var.instance_class
-  identifier              = var.db_identifier
-  username                = var.db_username
-  password                = var.db_password
-  db_subnet_group_name    = aws_db_subnet_group.db_subnet_group.name
-  backup_retention_period = var.backup_retention_period
-  backup_window           = var.backup_window
-  skip_final_snapshot     = true
-  
-  tags = {
-    name = "cds-dbs"
-  }
-}
-
-resource "aws_security_group" "web_sg" {
-  name   = "web_app_sg"
-  vpc_id = aws_vpc.hashi_vpc.id
-
-  # Ingress rules
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
-  }
-
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
-  }
-
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] #correspond to the IP address ranges from which you want to allow traffic
-  }
-
-    ingress {
-    from_port       = 1433 # SQL Server port
-    to_port         = 1433
-    protocol        = "tcp"
-    security_groups = [aws_security_group.hashi_sql_sg.id] # Allow incoming traffic only from the web server's security group
-    }
-
-  tags = {
-    Name = "web_app_sg"
   }
 }
